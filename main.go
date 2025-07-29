@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/anantashahane/Chirpy/internal/auth"
 	"github.com/anantashahane/Chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -21,6 +21,27 @@ type apiConfig struct {
 	fileServerHits atomic.Int32
 	db             *database.Queries
 	platform       string
+}
+
+type chirpResponseBody struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Body      string `json:"body"`
+	UserID    string `json:"user_id"`
+}
+
+type userDataRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type userDataResponse struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Email     string `json:"email"`
+	Error     string `json:"error,omitempty"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -46,54 +67,11 @@ func healthHandler(responseWriter http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func sensorCompetition(chirp string) (sensored_chirp string) {
-	sensored_chirp = chirp
-	competitiors := []string{"kerfuffle", "sharbert", "fornax"}
-	found := []string{}
-	for _, competitor := range competitiors {
-		for word := range strings.FieldsSeq(chirp) {
-			if competitor == strings.ToLower(word) {
-				found = append(found, word)
-			}
-		}
+func validateChirp(body string) bool {
+	if len(body) > 140 {
+		return false
 	}
-	fmt.Println(found)
-	for _, word := range found {
-		sensored_chirp = strings.ReplaceAll(sensored_chirp, word, "****")
-	}
-	return
-}
-
-func validateChirpHandler(responseWriter http.ResponseWriter, req *http.Request) {
-	type incomingPayload struct {
-		Body string `json:"body"`
-	}
-
-	type outGoingPayload struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	decoder := json.NewDecoder(req.Body)
-	encoder := json.NewEncoder(responseWriter)
-
-	incomingPayloadData := incomingPayload{}
-	err := decoder.Decode(&incomingPayloadData)
-
-	responseWriter.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		responseWriter.WriteHeader(400)
-		return
-	}
-
-	if len(incomingPayloadData.Body) > 140 {
-		responseWriter.WriteHeader(400)
-		return
-	}
-	censored_chirp := sensorCompetition(incomingPayloadData.Body)
-
-	outGoingPayloadData := outGoingPayload{CleanedBody: censored_chirp}
-	responseWriter.WriteHeader(200)
-	encoder.Encode(&outGoingPayloadData)
+	return true
 }
 
 func (apiCfg *apiConfig) metricsHandler(responseWriter http.ResponseWriter, req *http.Request) {
@@ -127,27 +105,23 @@ func (apiCfg *apiConfig) resetHandler(responseWriter http.ResponseWriter, req *h
 }
 
 func (apiCfg *apiConfig) createUserHandler(responseWriter http.ResponseWriter, req *http.Request) {
-	type requestBody struct {
-		Email string `json:"email"`
-	}
-
-	type responseBody struct {
-		ID        string `json:"id"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Email     string `json:"email"`
-		Error     string `json:"error,omitempty"`
-	}
-
 	decoder := json.NewDecoder(req.Body)
 	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(responseWriter)
 
-	requestedData := requestBody{}
+	requestedData := userDataRequest{}
 	err := decoder.Decode(&requestedData)
 	if err != nil {
 		responseWriter.WriteHeader(420)
-		responseData := responseBody{Error: "Incoming json format too zooted."}
+		responseData := userDataResponse{Error: "Incoming json format too zooted."}
+		encoder.Encode(responseData)
+		return
+	}
+
+	hash, err := auth.HashPassword(requestedData.Password)
+	if err != nil {
+		responseWriter.WriteHeader(420)
+		responseData := userDataResponse{Error: "Password failed to hash. Error: " + err.Error()}
 		encoder.Encode(responseData)
 		return
 	}
@@ -157,14 +131,15 @@ func (apiCfg *apiConfig) createUserHandler(responseWriter http.ResponseWriter, r
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		Email:     requestedData.Email,
+		Password:  hash,
 	})
 	if err != nil {
 		responseWriter.WriteHeader(406)
-		responseData := responseBody{Error: fmt.Sprintf("Account %v seems to already be registered.", requestedData.Email)}
+		responseData := userDataResponse{Error: fmt.Sprintf("Account %v seems to already be registered.", requestedData.Email)}
 		encoder.Encode(responseData)
 		return
 	}
-	responseData := responseBody{
+	responseData := userDataResponse{
 		ID:        creationData.ID.String(),
 		CreatedAt: creationData.CreatedAt.String(),
 		UpdatedAt: creationData.UpdatedAt.String(),
@@ -174,8 +149,193 @@ func (apiCfg *apiConfig) createUserHandler(responseWriter http.ResponseWriter, r
 	err = encoder.Encode(responseData)
 	if err != nil {
 		responseWriter.WriteHeader(404)
-		responseData := responseBody{Error: "Internal Server error"}
+		responseData := userDataResponse{Error: "Internal Server error"}
 		encoder.Encode(responseData)
+		return
+	}
+}
+
+func (apiCfg *apiConfig) loginUserHandler(responseWriter http.ResponseWriter, req *http.Request) {
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	encoder := json.NewEncoder(responseWriter)
+
+	requestedData := userDataRequest{}
+	err := decoder.Decode(&requestedData)
+	if err != nil {
+		responseWriter.WriteHeader(420)
+		responseData := userDataResponse{Error: "Incoming json format too zooted."}
+		encoder.Encode(responseData)
+		return
+	}
+
+	userData, err := apiCfg.db.GetUser(context.Background(), requestedData.Email)
+	if err != nil {
+		responseWriter.WriteHeader(401)
+		responseData := userDataResponse{Error: "No such user, " + requestedData.Email}
+		encoder.Encode(responseData)
+		return
+	}
+
+	if match := auth.PasswordMatchesHash(requestedData.Password, userData.Password); !match {
+		responseWriter.WriteHeader(401)
+		responseData := userDataResponse{Error: "Incorrect password for user " + requestedData.Email}
+		encoder.Encode(responseData)
+		return
+	}
+
+	responseData := userDataResponse{
+		ID:        userData.ID.String(),
+		CreatedAt: userData.CreatedAt.String(),
+		UpdatedAt: userData.UpdatedAt.String(),
+		Email:     userData.Email,
+	}
+	responseWriter.WriteHeader(200)
+	err = encoder.Encode(responseData)
+	if err != nil {
+		responseWriter.WriteHeader(404)
+		responseData := userDataResponse{Error: "Internal Server error"}
+		encoder.Encode(responseData)
+		return
+	}
+}
+
+func (apiCfg *apiConfig) createChirpHandler(responseWriter http.ResponseWriter, req *http.Request) {
+	type requestBody struct {
+		Body   string `json:"body"`
+		UserID string `json:"user_id"`
+	}
+
+	encoder := json.NewEncoder(responseWriter)
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+
+	requestData := requestBody{}
+	err := decoder.Decode(&requestData)
+	if err != nil {
+		responseWriter.WriteHeader(406)
+		responseWriter.Header().Set("Content Type", "plain/text")
+		responseWriter.Write([]byte("Json Decode failed."))
+		return
+	}
+
+	if !validateChirp(requestData.Body) {
+		responseWriter.WriteHeader(406)
+		responseWriter.Header().Set("Content Type", "plain/text")
+		responseWriter.Write([]byte("Chirp too long."))
+		return
+	}
+
+	uid, err := uuid.Parse(requestData.UserID)
+	if err != nil {
+		responseWriter.WriteHeader(406)
+		responseWriter.Header().Set("Content Type", "plain/text")
+		responseWriter.Write([]byte("User ID not valid."))
+		return
+	}
+
+	savedData, err := apiCfg.db.CreateChirps(context.Background(), database.CreateChirpsParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Body:      requestData.Body,
+		UserID:    uid,
+	})
+	if err != nil {
+		responseWriter.WriteHeader(422)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Save failed, check if attached user ID exists."))
+		return
+	}
+
+	responseData := chirpResponseBody{
+		ID:        savedData.ID.String(),
+		CreatedAt: savedData.CreatedAt.String(),
+		UpdatedAt: savedData.UpdatedAt.String(),
+		Body:      savedData.Body,
+		UserID:    savedData.UserID.String(),
+	}
+
+	responseWriter.WriteHeader(201)
+	responseWriter.Header().Set("Content-Type", "application/json")
+	err = encoder.Encode(responseData)
+
+	if err != nil {
+		responseWriter.WriteHeader(406)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("JSON encode failed."))
+		return
+	}
+}
+
+func (apiCfg *apiConfig) getAllChirpsHandler(responseWriter http.ResponseWriter, req *http.Request) {
+
+	encoder := json.NewEncoder(responseWriter)
+
+	responseBody := []chirpResponseBody{}
+
+	chirps, err := apiCfg.db.GetChirps(context.Background())
+	if err != nil {
+		responseWriter.WriteHeader(500)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Internal Server failed to access database."))
+		return
+	}
+
+	for _, chirp := range chirps {
+		responseBody = append(responseBody, chirpResponseBody{
+			ID:        chirp.ID.String(),
+			UpdatedAt: chirp.UpdatedAt.String(),
+			CreatedAt: chirp.CreatedAt.String(),
+			Body:      chirp.Body,
+			UserID:    chirp.UserID.String(),
+		})
+	}
+
+	responseWriter.WriteHeader(200)
+	responseWriter.Header().Set("Content-Type", "application/json")
+	err = encoder.Encode(responseBody)
+	if err != nil {
+		responseWriter.WriteHeader(500)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Unable to generate JSON response."))
+		return
+	}
+}
+
+func (apiCfg *apiConfig) handleGetChirpByID(responseWriter http.ResponseWriter, req *http.Request) {
+	path := req.PathValue("chirpID")
+	id, err := uuid.Parse(path)
+	if err != nil {
+		responseWriter.WriteHeader(404)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Error parsing ID " + path))
+		return
+	}
+	responseBody := chirpResponseBody{}
+
+	dbChirp, err := apiCfg.db.GetChirpByID(context.Background(), id)
+	if err != nil {
+		responseWriter.WriteHeader(404)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("No such chirp with ID " + path))
+		return
+	}
+	responseBody.ID = dbChirp.ID.String()
+	responseBody.CreatedAt = dbChirp.CreatedAt.String()
+	responseBody.UpdatedAt = dbChirp.UpdatedAt.String()
+	responseBody.Body = dbChirp.Body
+	responseBody.UserID = dbChirp.UserID.String()
+
+	encoder := json.NewEncoder(responseWriter)
+	responseWriter.WriteHeader(200)
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	err = encoder.Encode(responseBody)
+	if err != nil {
+		responseWriter.WriteHeader(404)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Error encoding json data."))
 		return
 	}
 }
@@ -206,18 +366,24 @@ func main() {
 	serveMux.HandleFunc("POST /admin/reset", apiHandler(cfg.resetHandler, "/admin/"))
 
 	serveMux.HandleFunc("POST /api/users", apiHandler(cfg.createUserHandler, "/api/"))
+	serveMux.HandleFunc("POST /api/login", apiHandler(cfg.loginUserHandler, "/api/"))
 	serveMux.HandleFunc("GET /api/healthz/", apiHandler(healthHandler, "/api/"))
-	serveMux.HandleFunc("POST /api/validate_chirp", apiHandler(validateChirpHandler, "/api/"))
+	serveMux.HandleFunc("POST /api/chirps", apiHandler(cfg.createChirpHandler, "/api/"))
+	serveMux.HandleFunc("GET /api/chirps/", apiHandler(cfg.getAllChirpsHandler, "/api/"))
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiHandler(cfg.handleGetChirpByID, "/api/"))
 
 	serveMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
 
 	fmt.Println("Listening on")
-	fmt.Println("\tPOST admin/reset\n")
+	fmt.Println("\tPOST admin/reset")
+	fmt.Println()
 	fmt.Println("\tGET /app")
 	fmt.Println("\tGET api/healthz")
 	fmt.Println("\tGET api/metrics")
-	fmt.Println("\tPOST api/validate_chirp/")
 	fmt.Println("\tPOST api/users")
+	fmt.Println("\tPOST api/login")
+	fmt.Println("\tPOST api/chirps/")
+	fmt.Println("\tGET api/chirps")
 
 	err = server.ListenAndServe()
 	if err != nil {
