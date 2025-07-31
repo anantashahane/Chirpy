@@ -78,6 +78,18 @@ func GetBearerToken(headers http.Header) (string, error) {
 	return btPair[1], nil
 }
 
+func GetPolkaKey(headers http.Header) (string, error) {
+	key := headers.Get("Authorization")
+	btPair := strings.Fields(key)
+	if len(btPair) != 2 {
+		return "", fmt.Errorf("(\"ApiKey\", token) pair not found in http header.")
+	}
+	if btPair[0] != "ApiKey" {
+		return "", fmt.Errorf("Keyword \"ApiKey\" not found.")
+	}
+	return btPair[1], nil
+}
+
 func MakeRefreshedToken() (string, error) {
 	token := make([]byte, 32)
 	rand.Read(token)

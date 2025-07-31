@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +21,7 @@ VALUES (
     $3,
     $4,
     $5
-) RETURNING id, created_at, updated_at, email, password
+) RETURNING id, created_at, updated_at, email, password, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -46,13 +47,14 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.Email,
 		&i.Password,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const deleteAllUsers = `-- name: DeleteAllUsers :one
 DELETE FROM users
-RETURNING id, created_at, updated_at, email, password
+RETURNING id, created_at, updated_at, email, password, is_chirpy_red
 `
 
 func (q *Queries) DeleteAllUsers(ctx context.Context) (User, error) {
@@ -64,12 +66,13 @@ func (q *Queries) DeleteAllUsers(ctx context.Context) (User, error) {
 		&i.UpdatedAt,
 		&i.Email,
 		&i.Password,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, created_at, updated_at, email, password FROM users
+SELECT id, created_at, updated_at, email, password, is_chirpy_red FROM users
 WHERE email = $1
 `
 
@@ -82,6 +85,94 @@ func (q *Queries) GetUser(ctx context.Context, email string) (User, error) {
 		&i.UpdatedAt,
 		&i.Email,
 		&i.Password,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, created_at, updated_at, email, password, is_chirpy_red FROM users
+WHERE id = $1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.Password,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const updatePassword = `-- name: UpdatePassword :one
+WITH updated_user AS (
+    UPDATE users
+    SET password = $1, updated_at = $2, email = $3
+    WHERE id = $4
+    RETURNING id, created_at, updated_at, email, password, is_chirpy_red
+)
+SELECT updated_user.id, updated_user.email, refresh_tokens.tokens, updated_user.updated_at, updated_user.created_at, updated_user.is_chirpy_red
+FROM updated_user
+LEFT JOIN refresh_tokens ON updated_user.id = refresh_tokens.user_id
+`
+
+type UpdatePasswordParams struct {
+	Password  string
+	UpdatedAt time.Time
+	Email     string
+	ID        uuid.UUID
+}
+
+type UpdatePasswordRow struct {
+	ID          uuid.UUID
+	Email       string
+	Tokens      sql.NullString
+	UpdatedAt   time.Time
+	CreatedAt   time.Time
+	IsChirpyRed sql.NullBool
+}
+
+func (q *Queries) UpdatePassword(ctx context.Context, arg UpdatePasswordParams) (UpdatePasswordRow, error) {
+	row := q.db.QueryRowContext(ctx, updatePassword,
+		arg.Password,
+		arg.UpdatedAt,
+		arg.Email,
+		arg.ID,
+	)
+	var i UpdatePasswordRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Tokens,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const upgradeUsertoRed = `-- name: UpgradeUsertoRed :one
+UPDATE users
+SET is_chirpy_red = TRUE
+WHERE id = $1
+RETURNING id, created_at, updated_at, email, password, is_chirpy_red
+`
+
+func (q *Queries) UpgradeUsertoRed(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, upgradeUsertoRed, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.Password,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }

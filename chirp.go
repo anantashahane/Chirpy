@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/anantashahane/Chirpy/internal/auth"
@@ -103,7 +105,6 @@ func (apiCfg *apiConfig) createChirpHandler(responseWriter http.ResponseWriter, 
 }
 
 func (apiCfg *apiConfig) getAllChirpsHandler(responseWriter http.ResponseWriter, req *http.Request) {
-
 	encoder := json.NewEncoder(responseWriter)
 
 	responseBody := []chirpResponseBody{}
@@ -115,15 +116,24 @@ func (apiCfg *apiConfig) getAllChirpsHandler(responseWriter http.ResponseWriter,
 		responseWriter.Write([]byte("Internal Server failed to access database."))
 		return
 	}
+	if sorting := strings.ToLower(req.URL.Query().Get("sort")); sorting == "desc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.Compare(chirps[j].CreatedAt) == 1
+		})
+	}
+
+	filterAuthor := req.URL.Query().Get("author_id")
 
 	for _, chirp := range chirps {
-		responseBody = append(responseBody, chirpResponseBody{
-			ID:        chirp.ID.String(),
-			UpdatedAt: chirp.UpdatedAt.String(),
-			CreatedAt: chirp.CreatedAt.String(),
-			Body:      chirp.Body,
-			UserID:    chirp.UserID.String(),
-		})
+		if filterAuthor == "" || filterAuthor == chirp.UserID.String() {
+			responseBody = append(responseBody, chirpResponseBody{
+				ID:        chirp.ID.String(),
+				UpdatedAt: chirp.UpdatedAt.String(),
+				CreatedAt: chirp.CreatedAt.String(),
+				Body:      chirp.Body,
+				UserID:    chirp.UserID.String(),
+			})
+		}
 	}
 
 	responseWriter.WriteHeader(200)
@@ -172,4 +182,57 @@ func (apiCfg *apiConfig) handleGetChirpByID(responseWriter http.ResponseWriter, 
 		responseWriter.Write([]byte("Error encoding json data."))
 		return
 	}
+}
+
+func (apiCfg *apiConfig) deleteChirpHandler(responseWriter http.ResponseWriter, req *http.Request) {
+	//Get chirp ID to delete.
+	chirpIDStr := req.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		responseWriter.WriteHeader(401)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Error parsing chirp id."))
+		return
+	}
+	// Authenticate sender.
+	authString, err := auth.GetBearerToken(req.Header)
+
+	if err != nil {
+		responseWriter.WriteHeader(401)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Unable to get authorisation Token."))
+		fmt.Println(req.Header)
+		return
+	}
+
+	//Delete and handle resonse.
+	uid, err := auth.ValidateJWT(authString, apiCfg.secret)
+	if err != nil {
+		responseWriter.WriteHeader(401)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Unable to validate authorisation Token."))
+		return
+	}
+
+	chirpToDelete, err := apiCfg.db.GetChirpByID(context.Background(), chirpID)
+	if err != nil {
+		responseWriter.WriteHeader(404)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Chirp with ID " + chirpID.String() + " not found"))
+		return
+	}
+	if uid != chirpToDelete.UserID {
+		responseWriter.WriteHeader(403)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Unauthorised access to delete this tweet."))
+		return
+	}
+	_, err = apiCfg.db.DeleteChirpByID(context.Background(), chirpToDelete.ID)
+	if uid != chirpToDelete.UserID {
+		responseWriter.WriteHeader(403)
+		responseWriter.Header().Set("Content-Type", "plain/text")
+		responseWriter.Write([]byte("Unable to delete."))
+		return
+	}
+	responseWriter.WriteHeader(204)
 }

@@ -28,6 +28,7 @@ func main() {
 	cfg.db = database.New(db)
 	cfg.platform = os.Getenv("PLATFORM")
 	cfg.secret = secret
+	cfg.polkaKey = os.Getenv("POKLA_KEY")
 
 	serveMux := http.NewServeMux()
 	server := http.Server{}
@@ -39,13 +40,16 @@ func main() {
 	serveMux.HandleFunc("POST /admin/reset", apiHandler(cfg.resetHandler, "/admin/"))
 
 	serveMux.HandleFunc("POST /api/users", apiHandler(cfg.createUserHandler, "/api/"))
+	serveMux.HandleFunc("PUT /api/users", apiHandler(cfg.handleUserPasswordChange, "/api/"))
 	serveMux.HandleFunc("POST /api/login", apiHandler(cfg.loginUserHandler, "/api/"))
 	serveMux.HandleFunc("GET /api/healthz/", apiHandler(healthHandler, "/api/"))
 	serveMux.HandleFunc("POST /api/chirps", apiHandler(cfg.createChirpHandler, "/api/"))
 	serveMux.HandleFunc("GET /api/chirps/", apiHandler(cfg.getAllChirpsHandler, "/api/"))
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiHandler(cfg.handleGetChirpByID, "/api/"))
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiHandler(cfg.deleteChirpHandler, "/api/"))
 	serveMux.HandleFunc("POST /api/refresh", apiHandler(cfg.handleRefresh, "/api/"))
 	serveMux.HandleFunc("POST /api/revoke", apiHandler(cfg.handleRevoke, "/api/"))
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiHandler(cfg.upgradeUserHandler, "/api/polka/webhooks"))
 
 	serveMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
 
@@ -56,11 +60,14 @@ func main() {
 	fmt.Println("\tGET api/healthz")
 	fmt.Println("\tGET api/metrics")
 	fmt.Println("\tPOST api/users")
+	fmt.Println("\tPUT api/users")
 	fmt.Println("\tPOST api/login")
-	fmt.Println("\tPOST api/chirps/[{chripID}]")
+	fmt.Println("\tGET api/chirps/[{chripID}]")
 	fmt.Println("\tGET api/chirps")
+	fmt.Println("\tDELETE api/chirps/{chirpID}")
 	fmt.Println("\tPost api/refresh")
 	fmt.Println("\tPost api/revoke")
+	fmt.Println("\tPost api/polka/webhooks")
 
 	err = server.ListenAndServe()
 	if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,5 +30,18 @@ func healthHandler(responseWriter http.ResponseWriter, req *http.Request) {
 	_, err := responseWriter.Write([]byte("OK"))
 	if err != nil {
 		os.Exit(2)
+	}
+}
+
+func (apiCfg *apiConfig) resetHandler(responseWriter http.ResponseWriter, req *http.Request) {
+	if apiCfg.platform != "dev" {
+		responseWriter.WriteHeader(403)
+	} else {
+		responseWriter.WriteHeader(200)
+		apiCfg.fileServerHits.Store(0)
+		_, err := apiCfg.db.DeleteAllUsers(context.Background())
+		if err != nil {
+			fmt.Println("Failed to reset users table.")
+		}
 	}
 }
